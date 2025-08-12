@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>手相バトラー</title>
+<style>
+  body {
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "ヒラギノ角ゴ ProN", Meiryo, sans-serif;
+    background: linear-gradient(135deg, #b7e4c7, #95d5b2, #74c69d);
+    margin: 0; padding: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+  }
+  h1 {
+    margin-top: 20px; margin-bottom: 10px;
+  }
+  #camera-section, #result-section, #battle-section {
+    width: 90vw; max-width: 480px; background: rgba(255 255 255 / 0.85); border-radius: 15px; padding: 15px; margin-bottom: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+  }
+  video, canvas {
+    width: 100%; border-radius: 10px; background: #222;
+  }
+  button {
+    margin-top: 10px; padding: 12px 20px; font-size: 1.1rem; border-radius: 10px; border: none; background: #4caf50; color: white; cursor: pointer;
+    user-select: none;
+  }
+  button:disabled {
+    background: #a5d6a7; cursor: not-allowed;
+  }
+  #stats {
+    margin-top: 10px; font-weight: 700; font-size: 1.1rem;
+  }
+  #battle-controls {
+    margin-top: 15px; display: flex; gap: 15px; justify-content: center;
+  }
+  .atk-btn {
+    background: #f44336;
+    flex: 1;
+  }
+  .def-btn {
+    background: #2196f3;
+    flex: 1;
+  }
+  #battle-log {
+    margin-top: 15px; height: 120px; overflow-y: auto; background: #fff; border-radius: 8px; padding: 10px; font-size: 0.95rem; line-height: 1.3; color: #222;
+    box-shadow: inset 0 0 8px rgba(0,0,0,0.1);
+  }
+  #player-hp, #cpu-hp {
+    font-weight: 700;
+    margin-top: 8px;
+  }
+</style>
+</head>
+<body>
+  <h1>手相バトラー</h1>
+
+  <section id="camera-section" aria-label="手相撮影セクション">
+    <video id="video" autoplay playsinline></video>
+    <button id="capture-btn">手相を撮る</button>
+    <canvas id="canvas" style="display:none;"></canvas>
+  </section>
+
+  <section id="result-section" aria-label="能力決定セクション" style="display:none;">
+    <h2>あなたの能力</h2>
+    <div id="stats"></div>
+    <button id="start-battle-btn">バトル開始！</button>
+  </section>
+
+  <section id="battle-section" aria-label="バトルセクション" style="display:none;">
+    <h2>バトル！ あなた vs CPU</h2>
+    <div id="player-hp"></div>
+    <div id="cpu-hp"></div>
+    <div id="battle-controls">
+      <button id="attack-btn" class="atk-btn">攻撃！</button>
+      <button id="defend-btn" class="def-btn">防御！</button>
+    </div>
+    <div id="battle-log" aria-live="polite"></div>
+  </section>
+
+<script>
+(() => {
+  const video = document.getElementById('video');
+  const captureBtn = document.getElementById('capture-btn');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const resultSection = document.getElementById('result-section');
+  const statsDiv = document.getElementById('stats');
+  const startBattleBtn = document.getElementById('start-battle-btn');
+  const battleSection = document.getElementById('battle-section');
+  const playerHpDiv = document.getElementById('player-hp');
+  const cpuHpDiv = document.getElementById('cpu-hp');
+  const battleLog = document.getElementById('battle-log');
+  const attackBtn = document.getElementById('attack-btn');
+  const defendBtn = document.getElementById('defend-btn');
+
+  let stream = null;
+  let player = { hp: 0, atk: 0, def: 0 };
+  let cpu = { hp: 0, atk: 0, def: 0 };
+  let playerTurn = true;
+  let battleOngoing = false;
+
+  async function startCamera() {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      video.srcObject = stream;
+    } catch(e) {
+      alert('カメラが起動できませんでした。許可を確認してください。');
+    }
+  }
+
+  function analyzeImage() {
+    // Canvasに動画フレームを描画
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // 画像データを取得
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imgData.data;
+
+    // 簡易分析：画像の明るさの平均値を計算し、それを元に能力値の基礎にする
+    let brightnessSum = 0;
+    let edgeCount = 0;
+
+    // 画像サイズを少し縮小して処理軽減（例：5px刻み）
+    const step = 5;
+    for(let y = 0; y < canvas.height - step; y += step) {
+      for(let x = 0; x < canvas.width - step; x += step) {
+        // RGB値
+        const i = (y * canvas.width + x) * 4;
+        const r = data[i], g = data[i+1], b = data[i+2];
+        // 明るさを計算（簡易）
+        const bright = 0.299*r + 0.587*g + 0.114*b;
+        brightnessSum += bright;
+
+        // 簡単なエッジ判定（隣のピクセルと明るさ差を見て線っぽいか判定）
+        const iRight = (y * canvas.width + (x+step)) * 4;
+        const rR = data[iRight], gR = data[iRight+1], bR = data[iRight+2];
+        const brightRight = 0.299*rR + 0.587*gR + 0.114*bR;
+        if(Math.abs(bright - brightRight) > 40) edgeCount++;
+
+        const iDown = ((y+step) * canvas.width + x) * 4;
+        const rD = data[iDown], gD = data[iDown+1], bD = data[iDown+2];
+        const brightDown = 0.299*rD + 0.587*gD + 0.114*bD;
+        if(Math.abs(bright - brightDown) > 40) edgeCount++;
+      }
+    }
+    const avgBrightness = brightnessSum / ((canvas.width/step)*(canvas.height/step));
+    // console.log("平均明るさ:", avgBrightness);
+    // console.log("線っぽいエッジ数:", edgeCount);
+
+    // ここで能力値を算出（雰囲気重視）
+    // 明るさが高いほどHPが高くなるイメージ
+    // エッジ数が多いほどATKとDEFが上がるイメージ
+
+    const hpBase = Math.min(100, Math.max(40, avgBrightness)); // 40~100 の範囲
+    const atkBase = Math.min(30, Math.max(10, edgeCount / 20)); // 10~30 の範囲（edgeCountをスケール）
+    const defBase = Math.min(20, Math.max(5, edgeCount / 30));  // 5~20 の範囲
+
+    // ランダム補正 ±10% 程度
+    function rndAdjust(val) {
+      const rate = 0.1;
+      return Math.floor(val * (1 + (Math.random()*2 -1)*rate));
+    }
+    player.hp = rndAdjust(hpBase);
+    player.atk = rndAdjust(atkBase);
+    player.def = rndAdjust(defBase);
+  }
+
+  function showStats() {
+    statsDiv.innerHTML = `
+      <p>HP: ${player.hp}</p>
+      <p>攻撃力 (ATK): ${player.atk}</p>
+      <p>防御力 (DEF): ${player.def}</p>
+    `;
+  }
+
+  function initCPU() {
+    // CPUはプレイヤー能力の±15%程度で作る
+    function rndAdjustCPU(val) {
+      const rate = 0.15;
+      return Math.max(5, Math.floor(val * (1 + (Math.random()*2 -1)*rate)));
+    }
+    cpu.hp = rndAdjustCPU(player.hp);
+    cpu.atk = rndAdjustCPU(player.atk);
+    cpu.def = rndAdjustCPU(player.def);
+  }
+
+  function updateHP() {
+    playerHpDiv.textContent = `あなたのHP: ${player.hp}`;
+    cpuHpDiv.textContent = `CPUのHP: ${cpu.hp}`;
+  }
+
+  function logBattle(text) {
+    const p = document.createElement('p');
+    p.textContent = text;
+    battleLog.appendChild(p);
+    battleLog.scrollTop = battleLog.scrollHeight;
+  }
+
+  function disableBattleBtns(disable) {
+    attackBtn.disabled = disable;
+    defendBtn.disabled = disable;
+  }
+
+  function playerAttack() {
+    if(!battleOngoing) return;
+    disableBattleBtns(true);
+    // ダメージ計算（攻撃力-防御力×0.5+ランダム(1〜5)）
+    let damage = player.atk - cpu.def * 0.5 + (Math.floor(Math.random() * 5) + 1);
+    damage = Math.max(1, Math.floor(damage));
+    cpu.hp -= damage;
+    cpu.hp = Math.max(0, cpu.hp);
+    logBattle(`あなたの攻撃！ CPUに${damage}ダメージ`);
+    updateHP();
+    if(cpu.hp <= 0){
+      logBattle("CPUを倒した！あなたの勝ちです🎉");
+      battleOngoing = false;
+      disableBattleBtns(true);
+      return;
+    }
+    setTimeout(cpuTurn, 1500);
+  }
+
+  function playerDefend() {
+    if(!battleOngoing) return;
+    disableBattleBtns(true);
+    logBattle("あなたは防御の構え");
+    setTimeout(cpuTurn, 1500);
+  }
+
+  function cpuTurn() {
+    if(!battleOngoing) return;
+    // CPUは60%攻撃、40%防御
+    const cpuAction = (Math.random() < 0.6) ? 'attack' : 'defend';
+    if(cpuAction === 'attack'){
+      // CPU攻撃
+      let damage = cpu.atk - player.def * 0.5 + (Math.floor(Math.random() * 5) + 1);
+      damage = Math.max(1, Math.floor(damage));
+      player.hp -= damage;
+      player.hp = Math.max(0, player.hp);
+      logBattle(`CPUの攻撃！ あなたに${damage}ダメージ`);
+      updateHP();
+      if(player.hp <= 0){
+        logBattle("あなたは倒されました…CPUの勝ちです。");
+        battleOngoing = false;
+        disableBattleBtns(true);
+        return;
+      }
+    } else {
+      logBattle("CPUは防御の構え");
+    }
+    disableBattleBtns(false);
+  }
+
+  // ボタンイベント
+  captureBtn.addEventListener('click', () => {
+    analyzeImage();
+    showStats();
+    resultSection.style.display = 'block';
+    battleSection.style.display = 'none';
+  });
+
+  startBattleBtn.addEventListener('click', () => {
+    initCPU();
+    updateHP();
+    battleLog.textContent = '';
+    battleSection.style.display = 'block';
+    playerTurn = true;
+    battleOngoing = true;
+    disableBattleBtns(false);
+  });
+
+  attackBtn.addEventListener('click', () => {
+    if(!battleOngoing) return;
+    playerAttack();
+  });
+
+  defendBtn.addEventListener('click', () => {
+    if(!battleOngoing) return;
+    playerDefend();
+  });
+
+  // ページロード時にカメラ起動
+  startCamera();
+
+})();
+</script>
+</body>
+</html>
